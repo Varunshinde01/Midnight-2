@@ -14,39 +14,98 @@
 // limitations under the License.
 
 import React from 'react';
-import { Box } from '@mui/material';
+import { Box, Typography } from '@mui/material';
 import { Header } from './Header';
 
 /**
- * Provides layout for the bulletin board application.
+ * Provides the premium layout for the bulletin board application.
+ *
+ * @remarks
+ * Features a sticky glassmorphism header, animated gradient background,
+ * and a responsive centered content area with proper spacing.
  */
 export const MainLayout: React.FC<React.PropsWithChildren> = ({ children }) => {
   return (
-    <Box sx={{ minHeight: '100vh', overflow: 'hidden' }}>
+    <Box sx={{ minHeight: '100vh', overflow: 'hidden', position: 'relative', zIndex: 1 }}>
       <Header />
-      <Box sx={{ px: 10, position: 'relative', height: '100%' }}>
-        <img
-          src="/logo-render.png"
-          alt="logo-image"
-          height={607}
-          style={{ position: 'absolute', zIndex: 1, left: '2vw', top: '5vh' }}
-        />
+
+      {/* Main content area */}
+      <Box
+        component="main"
+        sx={{
+          position: 'relative',
+          minHeight: 'calc(100vh - 72px)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          px: { xs: 2, sm: 4, md: 6 },
+          py: { xs: 4, sm: 6 },
+        }}
+      >
+        {/* Top gradient glow */}
         <Box
           sx={{
-            zIndex: 999,
+            position: 'absolute',
+            top: 0,
+            left: '50%',
+            transform: 'translateX(-50%)',
+            width: '80%',
+            maxWidth: 800,
+            height: 300,
+            background: 'radial-gradient(ellipse at 50% 0%, rgba(124,92,252,0.08) 0%, transparent 70%)',
+            pointerEvents: 'none',
+            zIndex: 0,
+          }}
+        />
+
+        {/* Content wrapper */}
+        <Box
+          sx={{
             position: 'relative',
+            zIndex: 1,
+            width: '100%',
+            maxWidth: 1100,
             display: 'flex',
-            justifyContent: 'center',
-            gap: '5px',
-            rowGap: '5px',
+            flexDirection: 'column',
             alignItems: 'center',
-            height: '100%',
-            py: '10vh',
-            px: '15vw',
+            gap: 4,
           }}
         >
           {children}
         </Box>
+      </Box>
+
+      {/* Footer */}
+      <Box
+        component="footer"
+        sx={{
+          textAlign: 'center',
+          py: 3,
+          px: 2,
+          borderTop: '1px solid rgba(120, 100, 255, 0.06)',
+        }}
+      >
+        <Typography
+          variant="body2"
+          sx={{ fontSize: '12px', color: '#5a5670' }}
+        >
+          Built on{' '}
+          <Typography
+            component="a"
+            href="https://midnight.network/"
+            target="_blank"
+            rel="noopener noreferrer"
+            sx={{
+              fontSize: '12px',
+              color: '#7c5cfc',
+              textDecoration: 'none',
+              '&:hover': { textDecoration: 'underline' },
+            }}
+          >
+            Midnight Network
+          </Typography>
+          {' '}— Zero-knowledge privacy by design
+        </Typography>
       </Box>
     </Box>
   );
