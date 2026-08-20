@@ -55,6 +55,20 @@ import { NetworkId } from '@midnight-ntwrk/midnight-js-network-id';
 import type { UnboundTransaction } from '@midnight-ntwrk/midnight-js-types';
 
 /**
+ * Wallet connection status.
+ */
+export type WalletStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
+
+/**
+ * Wallet connection state.
+ */
+export interface WalletState {
+  readonly status: WalletStatus;
+  readonly address?: string;
+  readonly errorMessage?: string;
+}
+
+/**
  * An in-progress bulletin board deployment.
  */
 export interface InProgressBoardDeployment {
@@ -105,6 +119,21 @@ export interface DeployedBoardAPIProvider {
   readonly boardDeployments$: Observable<Array<Observable<BoardDeployment>>>;
 
   /**
+   * Gets the observable wallet connection state.
+   */
+  readonly walletState$: Observable<WalletState>;
+
+  /**
+   * Connects to the Lace wallet.
+   */
+  readonly connect: () => Promise<void>;
+
+  /**
+   * Disconnects from the Lace wallet.
+   */
+  readonly disconnect: () => void;
+
+  /**
    * Joins or deploys a bulletin board contract.
    *
    * @param contractAddress An optional contract address to use when resolving.
@@ -126,7 +155,9 @@ export interface DeployedBoardAPIProvider {
  */
 export class BrowserDeployedBoardManager implements DeployedBoardAPIProvider {
   readonly #boardDeploymentsSubject: BehaviorSubject<Array<BehaviorSubject<BoardDeployment>>>;
+  readonly #walletStateSubject: BehaviorSubject<WalletState>;
   #initializedProviders: Promise<BBoardProviders> | undefined;
+  #connectedAPI: ConnectedAPI | undefined;
 
   /**
    * Initializes a new {@link BrowserDeployedBoardManager} instance.
@@ -135,11 +166,68 @@ export class BrowserDeployedBoardManager implements DeployedBoardAPIProvider {
    */
   constructor(private readonly logger: Logger) {
     this.#boardDeploymentsSubject = new BehaviorSubject<Array<BehaviorSubject<BoardDeployment>>>([]);
+    this.#walletStateSubject = new BehaviorSubject<WalletState>({ status: 'disconnected' });
     this.boardDeployments$ = this.#boardDeploymentsSubject;
+    this.walletState$ = this.#walletStateSubject;
   }
 
   /** @inheritdoc */
   readonly boardDeployments$: Observable<Array<Observable<BoardDeployment>>>;
+
+  /** @inheritdoc */
+  readonly walletState$: Observable<WalletState>;
+
+  /**
+   * Connects to the Lace wallet.
+   */
+  async connect(): Promise<void> {
+    if (this.#walletStateSubject.value.status === 'connected') {
+      return;
+    }
+
+    this.#walletStateSubject.next({ status: 'connecting' });
+
+    try {
+      const providers = await this.getProviders();
+      // If we got providers, we're connected
+      const config = await this.#connectedAPI!.getConfiguration();
+      const addresses = await this.#connectedAPI!.getShieldedAddresses();
+      const shortAddress = addresses.shieldedCoinPublicKey
+        ? `${addresses.shieldedCoinPublicKey.substring(0, 8)}...${addresses.shieldedCoinPublicKey.substring(addresses.shieldedCoinPublicKey.length - 6)}`
+        : 'Connected';
+
+      this.#walletStateSubject.next({
+        status: 'connected',
+        address: shortAddress,
+      });
+
+      this.logger.info('Wallet connected successfully');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.#walletStateSubject.next({
+        status: 'error',
+        errorMessage: message,
+      });
+      this.logger.error({ error }, 'Wallet connection failed');
+    }
+  }
+
+  /**
+   * Disconnects from the Lace wallet.
+   */
+  disconnect(): void {
+    // Clear the cached providers
+    this.#initializedProviders = undefined;
+    this.#connectedAPI = undefined;
+
+    // Clear all board deployments
+    this.#boardDeploymentsSubject.next([]);
+
+    // Update wallet state
+    this.#walletStateSubject.next({ status: 'disconnected' });
+
+    this.logger.info('Wallet disconnected');
+  }
 
   /** @inheritdoc */
   resolve(contractAddress?: ContractAddress): Observable<BoardDeployment> {
@@ -175,7 +263,57 @@ export class BrowserDeployedBoardManager implements DeployedBoardAPIProvider {
     // 2. Act as a synchronization point if multiple contract deploys or joins run concurrently.
     //    Concurrent calls to `getProviders()` will receive, and ultimately await, the same
     //    `Promise`.
-    return this.#initializedProviders ?? (this.#initializedProviders = initializeProviders(this.logger));
+    return this.#initializedProviders ?? (this.#initializedProviders = this.initializeProviders());
+  }
+
+  private async initializeProviders(): Promise<BBoardProviders> {
+    const networkId = import.meta.env.VITE_NETWORK_ID as NetworkId;
+    const connectedAPI = await connectToWallet(this.logger, networkId);
+    this.#connectedAPI = connectedAPI;
+    const zkConfigPath = window.location.origin;
+    const keyMaterialProvider = new FetchZkConfigProvider<BBoardCircuitKeys>(zkConfigPath, fetch.bind(window));
+    const config = await connectedAPI.getConfiguration();
+    const inMemoryBBoardPrivateStateProvider = inMemoryPrivateStateProvider<string, BBoardPrivateState>();
+    const shieldedAddresses = await connectedAPI.getShieldedAddresses();
+    return {
+      privateStateProvider: inMemoryBBoardPrivateStateProvider,
+      zkConfigProvider: keyMaterialProvider,
+      proofProvider: httpClientProofProvider(config.proverServerUri!, keyMaterialProvider),
+      publicDataProvider: indexerPublicDataProvider(config.indexerUri, config.indexerWsUri),
+      walletProvider: {
+        getCoinPublicKey(): string {
+          return shieldedAddresses.shieldedCoinPublicKey;
+        },
+        getEncryptionPublicKey(): string {
+          return shieldedAddresses.shieldedEncryptionPublicKey;
+        },
+        balanceTx: async (tx: UnboundTransaction, ttl?: Date): Promise<FinalizedTransaction> => {
+          try {
+            this.logger.info({ tx, ttl }, 'Balancing transaction via wallet');
+            const serializedTx = toHex(tx.serialize());
+            const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
+            return Transaction.deserialize<SignatureEnabled, Proof, Binding>(
+              'signature',
+              'proof',
+              'binding',
+              fromHex(received.tx),
+            );
+          } catch (e) {
+            this.logger.error({ error: e }, 'Error balancing transaction via wallet');
+            throw e;
+          }
+        },
+      },
+      midnightProvider: {
+        submitTx: async (tx: FinalizedTransaction): Promise<TransactionId> => {
+          await connectedAPI.submitTransaction(toHex(tx.serialize()));
+          const txIdentifiers = tx.identifiers();
+          const txId = txIdentifiers[0]; // Return the first transaction ID
+          this.logger.info({ txIdentifiers }, 'Submitted transaction via wallet');
+          return txId;
+        },
+      },
+    };
   }
 
   private async deployDeployment(deployment: BehaviorSubject<BoardDeployment>): Promise<void> {
@@ -215,56 +353,6 @@ export class BrowserDeployedBoardManager implements DeployedBoardAPIProvider {
     }
   }
 }
-
-/** @internal */
-const initializeProviders = async (logger: Logger): Promise<BBoardProviders> => {
-  const networkId = import.meta.env.VITE_NETWORK_ID as NetworkId;
-  const connectedAPI = await connectToWallet(logger, networkId);
-  const zkConfigPath = window.location.origin; // '../../../contract/src/managed/bboard';
-  const keyMaterialProvider = new FetchZkConfigProvider<BBoardCircuitKeys>(zkConfigPath, fetch.bind(window));
-  const config = await connectedAPI.getConfiguration();
-  const inMemoryBBoardPrivateStateProvider = inMemoryPrivateStateProvider<string, BBoardPrivateState>();
-  const shieldedAddresses = await connectedAPI.getShieldedAddresses();
-  return {
-    privateStateProvider: inMemoryBBoardPrivateStateProvider,
-    zkConfigProvider: keyMaterialProvider,
-    proofProvider: httpClientProofProvider(config.proverServerUri!, keyMaterialProvider),
-    publicDataProvider: indexerPublicDataProvider(config.indexerUri, config.indexerWsUri),
-    walletProvider: {
-      getCoinPublicKey(): string {
-        return shieldedAddresses.shieldedCoinPublicKey;
-      },
-      getEncryptionPublicKey(): string {
-        return shieldedAddresses.shieldedEncryptionPublicKey;
-      },
-      balanceTx: async (tx: UnboundTransaction, ttl?: Date): Promise<FinalizedTransaction> => {
-        try {
-          logger.info({ tx, ttl }, 'Balancing transaction via wallet');
-          const serializedTx = toHex(tx.serialize());
-          const received = await connectedAPI.balanceUnsealedTransaction(serializedTx);
-          return Transaction.deserialize<SignatureEnabled, Proof, Binding>(
-            'signature',
-            'proof',
-            'binding',
-            fromHex(received.tx),
-          );
-        } catch (e) {
-          logger.error({ error: e }, 'Error balancing transaction via wallet');
-          throw e;
-        }
-      },
-    },
-    midnightProvider: {
-      submitTx: async (tx: FinalizedTransaction): Promise<TransactionId> => {
-        await connectedAPI.submitTransaction(toHex(tx.serialize()));
-        const txIdentifiers = tx.identifiers();
-        const txId = txIdentifiers[0]; // Return the first transaction ID
-        logger.info({ txIdentifiers }, 'Submitted transaction via wallet');
-        return txId;
-      },
-    },
-  };
-};
 
 /** @internal */
 const getFirstCompatibleWallet = (): InitialAPI | undefined => {
