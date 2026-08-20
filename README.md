@@ -1,4 +1,4 @@
-# Midnight Bulletin Board DApp — Level 2
+# Midnight-2 — Level 2 DApp
 
 A privacy-preserving bulletin board decentralized application (DApp) built on the [Midnight Network](https://midnight.network/) with zero-knowledge (ZK) proofs, TypeScript API, and a React + Vite frontend connected to the Lace Wallet.
 
@@ -27,7 +27,7 @@ A privacy-preserving bulletin board decentralized application (DApp) built on th
 
 ## 📋 Level 2 Submission Details
 
-- **Public GitHub Repository:** `https://github.com/Varunshinde01/bboard-app`
+- **Public GitHub Repository:** `https://github.com/Varunshinde01/Midnight-2`
 - **Live Demo Link:** `https://bboard-midnight.vercel.app`
 - **Deployed Preprod Contract Address:** `0200dbf964f541e1950883f5b2f539b66fd6111e46ce8e6e9551fbdd180114d5dd5b`
 - **Demo Video:** [Lace Wallet Connect + Circuit Call Demo Video](#)
